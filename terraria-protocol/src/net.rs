@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: &str = "Terraria238";
+const PROTOCOL_VERSION: &str = "Terraria279";
 
 // TODO don't use constants for this
 const PLAYER_UUID: &str = "01032c81-623f-4435-85e5-e0ec816b09ca"; // random
