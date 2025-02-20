@@ -1,6 +1,7 @@
 use std::thread;
 use std::time::Duration;
-use terraria_protocol::net::Terraria;
+use terraria_protocol::net::{ConnectArgs, Terraria};
+use terraria_protocol::packets::PlayerInfo;
 use terraria_protocol::{packets, Packet};
 
 use std::io;
@@ -10,7 +11,11 @@ const SERVER_ADDR: &str = "localhost:7777";
 
 fn main() -> io::Result<()> {
     println!("Connecting to the server...");
-    let mut terraria = Terraria::connect(SERVER_ADDR)?;
+    let mut terraria = Terraria::connect(ConnectArgs {
+        addr: SERVER_ADDR,
+        player_info: Some(PlayerInfo::terry()),
+        ..ConnectArgs::default()
+    })?;
     println!("Connected to the server!");
 
     let info = loop {

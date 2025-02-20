@@ -1,4 +1,5 @@
 //! Basic, threaded network implementation.
+use crate::packets::PlayerInfo;
 use crate::serde::SliceCursor;
 use crate::{packets, Packet};
 use log::trace;
@@ -8,10 +9,36 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: &str = "Terraria279";
+const DEFAULT_PROTOCOL_VERSION: &str = "Terraria279";
 
-// TODO don't use constants for this
-const PLAYER_UUID: &str = "01032c81-623f-4435-85e5-e0ec816b09ca"; // random
+const DEFAULT_PLAYER_UUID: &str = "01032c81-623f-4435-85e5-e0ec816b09ca"; // random
+
+const DEFAULT_PLAYER_HEALTH: packets::PlayerHp = packets::PlayerHp {
+    player_id: 0,
+    hp: 100,
+    max_hp: 100,
+};
+
+const DEFAULT_PLAYER_MANA: packets::PlayerMana = packets::PlayerMana {
+    player_id: 0,
+    mana: 200,
+    max_mana: 200,
+};
+
+const DEFAULT_PLAYER_BUFFS: packets::UpdatePlayerBuff = packets::UpdatePlayerBuff {
+    player_id: 0,
+    buffs: [0u16; 22],
+};
+
+const DEFAULT_PLAYER_INVENTORY_SLOT: packets::PlayerInventorySlot = packets::PlayerInventorySlot {
+    player_id: 0,
+    slot_id: 0,
+    stack: 0,
+    prefix: 0,
+    item_netid: 0,
+};
+
+const INVENTORY_SIZE: usize = 260;
 
 const READ_MESSAGE_BUFFER: usize = 16;
 
@@ -20,6 +47,38 @@ pub struct Terraria {
     out_buffer: Vec<u8>,
     _reader_thread: thread::JoinHandle<io::Result<()>>,
     packet_rx: mpsc::Receiver<Packet>,
+}
+
+pub struct ConnectArgs<A: ToSocketAddrs + std::marker::Copy> {
+    pub addr: A,
+    pub protocol_version: Option<String>,
+    pub player_info: Option<packets::PlayerInfo>,
+    pub player_uuid: Option<String>,
+    pub player_hp: Option<packets::PlayerHp>,
+    pub player_mana: Option<packets::PlayerMana>,
+    pub player_buffs: Option<packets::UpdatePlayerBuff>,
+    pub player_inventory: Option<[packets::PlayerInventorySlot; INVENTORY_SIZE]>,
+}
+
+impl Default for ConnectArgs<&str> {
+    fn default() -> Self {
+        ConnectArgs {
+            addr: "127.0.0.1",
+            protocol_version: Some(DEFAULT_PROTOCOL_VERSION.to_string()),
+            player_info: Some(PlayerInfo::terry()),
+            player_uuid: Some(DEFAULT_PLAYER_UUID.to_string()), // random
+            player_hp: Some(DEFAULT_PLAYER_HEALTH),
+            player_mana: Some(DEFAULT_PLAYER_MANA),
+            player_buffs: Some(DEFAULT_PLAYER_BUFFS),
+            player_inventory: Some([DEFAULT_PLAYER_INVENTORY_SLOT; INVENTORY_SIZE]),
+        }
+    }
+}
+
+impl From<()> for ConnectArgs<&str> {
+    fn from(_: ()) -> Self {
+        ConnectArgs::default()
+    }
 }
 
 fn reader_worker(
@@ -49,23 +108,23 @@ fn reader_worker(
 }
 
 impl Terraria {
-    pub fn connect_timeout<A: ToSocketAddrs>(addr: A, timeout: Duration) -> io::Result<Self> {
+    pub fn connect_timeout<A: ToSocketAddrs + std::marker::Copy>(connect_args: ConnectArgs<A>, timeout: Duration) -> io::Result<Self> {
         // convert addr to SocketAddr
-        let socket_addr = addr.to_socket_addrs()?.next().ok_or_else(|| {
+        let socket_addr = connect_args.addr.to_socket_addrs()?.next().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "Invalid address")
         })?;
 
         let stream = TcpStream::connect_timeout(&socket_addr, timeout)?;
-        return Self::connect_shared(stream);
+        return Self::connect_shared(connect_args, stream);
     }
 
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {        
+    pub fn connect<A: ToSocketAddrs + std::marker::Copy>(connect_args: ConnectArgs<A>) -> io::Result<Self> {        
         // connection
-        let stream = TcpStream::connect(addr)?;
-        return Self::connect_shared(stream);
+        let stream = TcpStream::connect(connect_args.addr)?;
+        return Self::connect_shared(connect_args, stream);
     }
 
-    fn connect_shared(stream: TcpStream) -> io::Result<Self> {
+    fn connect_shared<A: ToSocketAddrs + std::marker::Copy>(connect_args: ConnectArgs<A>, stream: TcpStream) -> io::Result<Self> {
         let reader = BufReader::new(stream.try_clone()?);
         let (packet_tx, packet_rx) = mpsc::sync_channel(READ_MESSAGE_BUFFER);
         let _reader_thread = thread::Builder::new()
@@ -81,60 +140,41 @@ impl Terraria {
         // handshake
         this.send_packet(
             &packets::Connect {
-                version: PROTOCOL_VERSION.to_string(),
+                version: connect_args.protocol_version.unwrap_or_else(|| DEFAULT_PROTOCOL_VERSION.to_string()),
             }
             .into(),
         )?;
 
-        // TODO this needs to be customizable
-        this.send_packet(&packets::PlayerInfo::default().into())?;
+        this.send_packet(
+            &connect_args.player_info.unwrap_or_else(|| PlayerInfo::terry()).into(),
+        )?;
 
         this.send_packet(
             &packets::ClientUuid {
-                uuid4: PLAYER_UUID.to_string(),
+                uuid4: connect_args.player_uuid.unwrap_or_else(|| DEFAULT_PLAYER_UUID.to_string()),
             }
             .into(),
         )?;
 
         // TODO rename to Health?
         this.send_packet(
-            &packets::PlayerHp {
-                player_id: 0,
-                hp: 100,
-                max_hp: 100,
-            }
-            .into(),
+            &connect_args.player_hp.unwrap_or_else(|| DEFAULT_PLAYER_HEALTH).into(),
         )?;
 
         this.send_packet(
-            &packets::PlayerMana {
-                player_id: 0,
-                mana: 200,
-                max_mana: 200,
-            }
-            .into(),
+            &connect_args.player_mana.unwrap_or_else(|| DEFAULT_PLAYER_MANA).into(),
         )?;
 
-        // TODO bad name
         this.send_packet(
-            &packets::UpdatePlayerBuff {
-                player_id: 0,
-                buffs: [0u16; 22],
-            }
-            .into(),
+            &connect_args.player_buffs.unwrap_or_else(|| DEFAULT_PLAYER_BUFFS).into(),
         )?;
 
-        for i in 0..260 {
-            this.send_packet(
-                &packets::PlayerInventorySlot {
-                    player_id: 0,
-                    slot_id: i,
-                    stack: 0,
-                    prefix: 0,
-                    item_netid: 0,
-                }
-                .into(),
-            )?;
+        for (i, slot) in connect_args.player_inventory.unwrap_or_else(
+                || [DEFAULT_PLAYER_INVENTORY_SLOT; INVENTORY_SIZE]
+            ).iter().enumerate() {
+            let mut slot = slot.clone();
+            slot.slot_id = i as i16;
+            this.send_packet(&Packet::PlayerInventorySlot(slot))?;
         }
 
         this.send_packet(&packets::RequestWorldData {}.into())?;
